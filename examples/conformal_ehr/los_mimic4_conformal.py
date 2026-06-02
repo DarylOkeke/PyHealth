@@ -20,7 +20,14 @@ but noisy with so little patients. Sets shrink w/ less coverage.
 On full MIMIC-IV the model would be stronger, so the sets get much smaller and coverage
 tighter.
 
-I also print the per-class miscoverage_ps (miscoverage on each true LOS class).
+I also print per-class miscoverage_ps (miscoverage for each true LOS class 0-9):
+
+    alpha=0.20: [0.60 0.40 0.25 0.15 0.26 0.40 0.50 0.37 0.06 0.15]
+    alpha=0.10: [0.40 0.20 0.07 0.10 0.09 0.07 0.20 0.10 0.00 0.00]
+    alpha=0.05: [0.20 0.20 0.03 0.00 0.09 0.07 0.00 0.10 0.00 0.00]
+
+this shows the overall coverage hides imbalance -- some classes (like class 0) get missed
+way more than others. some 0.00s are just rare classes w/ few test samples per split.
 
 Run on the demo:
     python los_mimic4_conformal.py --root /path/to/mimic-iv-clinical-database-demo-2.2
