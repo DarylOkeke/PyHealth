@@ -102,7 +102,6 @@ def run_seed(samples, seed: int, alphas: list[float], epochs: int) -> dict:
     Trainer(
         model=model,
         metrics=["roc_auc_weighted_ovr", "f1_macro", "accuracy"],
-        enable_logging=False,
     ).train(
         train_dataloader=train_loader,
         val_dataloader=val_loader,
@@ -137,8 +136,7 @@ def main(
 ) -> None:
     dataset = MIMIC4Dataset(
         ehr_root=root,
-        ehr_tables=["patients", "admissions", "diagnoses_icd",
-                    "procedures_icd", "prescriptions"],
+        ehr_tables=["diagnoses_icd", "procedures_icd", "prescriptions"],
         dev=dev,
     )
     samples = dataset.set_task(MortalityPredictionMIMIC4Multiclass())
