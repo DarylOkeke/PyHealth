@@ -3,10 +3,10 @@ Split conformal prediction for length-of-stay prediction on MIMIC-IV.
 
 This example demonstrates:
 1. Training a Transformer on the MIMIC-IV length-of-stay task (10 classes).
-2. Wrapping the trained model with LABEL (split conformal prediction) to produce
-   prediction sets with a user-specified coverage guarantee (1 - alpha).
-3. Evaluating the prediction sets via overall coverage, average set size, and
-   per-class miscoverage, averaged over multiple random seeds.
+2. Wrapping the trained model with LABEL (split conformal prediction) in marginal and
+   class-conditional modes, each with a coverage guarantee of 1 - alpha.
+3. Comparing the two modes via overall coverage, average set size, and per-class
+   miscoverage, averaged over multiple random seeds.
 
 Usage:
     # Full dataset
@@ -44,10 +44,28 @@ from pyhealth.trainer import Trainer
 logging.getLogger("pyhealth").setLevel(logging.WARNING)
 
 
+def _evaluate(model, alpha, cal_data, test_loader) -> tuple:
+    """Calibrate LABEL at `alpha` and evaluate on the test split.
+
+    Float `alpha` -> marginal coverage; per-class list -> class-conditional.
+    Returns (coverage, avg_set_size, per_class_miscoverage).
+    """
+    cal_model = LABEL(model, alpha=alpha)
+    cal_model.calibrate(cal_dataset=cal_data)
+    y_true, _, _, extra = Trainer(model=cal_model, enable_logging=False).inference(
+        test_loader, additional_outputs=["y_predset"]
+    )
+    predset = extra["y_predset"]
+    y_true = np.asarray(y_true)
+    coverage = 1 - miscoverage_overall_ps(predset, y_true)
+    return coverage, size(predset), miscoverage_ps(predset, y_true)
+
+
 def run_seed(samples, seed: int, alphas: list[float], epochs: int) -> dict:
     """Train the base model and run split conformal prediction for a single seed.
 
-    Returns {alpha: (coverage, avg_set_size, per_class_miscoverage)} on the test split.
+    Returns {method: {alpha: (coverage, avg_set_size, per_class_miscoverage)}} on the
+    test split, for method in {"marginal", "class-conditional"}.
     """
     random.seed(seed)
     np.random.seed(seed)
@@ -69,20 +87,30 @@ def run_seed(samples, seed: int, alphas: list[float], epochs: int) -> dict:
         monitor="f1_macro",
     )
 
-    results = {}
+    n_classes = samples.output_processors["los"].size()
+    results = {"marginal": {}, "class-conditional": {}}
     for alpha in alphas:
-        cal_model = LABEL(model, alpha=alpha)
-        cal_model.calibrate(cal_dataset=cal_data)
-        y_true, _, _, extra = Trainer(model=cal_model, enable_logging=False).inference(
-            test_loader, additional_outputs=["y_predset"]
+        results["marginal"][alpha] = _evaluate(model, alpha, cal_data, test_loader)
+        results["class-conditional"][alpha] = _evaluate(
+            model, [alpha] * n_classes, cal_data, test_loader
         )
-        predset = extra["y_predset"]
-        y_true = np.asarray(y_true)
-        coverage = 1 - miscoverage_overall_ps(predset, y_true)
-        set_size = size(predset)
-        class_miscov = miscoverage_ps(predset, y_true)
-        results[alpha] = (coverage, set_size, class_miscov)
     return results
+
+
+def _report(method: str, per_alpha: dict, alphas: list[float], n_seeds: int) -> None:
+    """Print the coverage table and per-class miscoverage for one LABEL mode."""
+    print(f"\n=== {method} LABEL (mean +/- std over {n_seeds} seeds) ===")
+    print("alpha  target  coverage      avg_set_size")
+    for a in alphas:
+        cov = np.array([r[0] for r in per_alpha[a]])
+        sizes = np.array([r[1] for r in per_alpha[a]])
+        print(f"{a:.2f}    {1 - a:.0%}    {cov.mean():.2f} +/- {cov.std():.2f}   "
+              f"{sizes.mean():.1f} +/- {sizes.std():.1f}")
+    print("per-class miscoverage_ps:")
+    for a in alphas:
+        per_class = np.stack([r[2] for r in per_alpha[a]]).mean(0)
+        print(f"alpha={a:.2f}: "
+              + np.array2string(per_class, precision=2, floatmode="fixed"))
 
 
 def main(
@@ -100,30 +128,17 @@ def main(
     samples = dataset.set_task(LengthOfStayPredictionMIMIC4())
     print(f"Samples: {len(samples)}")
 
-    # Aggregate results across seeds.
-    coverage = {a: [] for a in alphas}
-    set_size = {a: [] for a in alphas}
-    class_miscov = {a: [] for a in alphas}
+    # Aggregate per method across seeds.
+    methods = ["marginal", "class-conditional"]
+    agg = {m: {a: [] for a in alphas} for m in methods}
     for seed in seeds:
         results = run_seed(samples, seed, alphas, epochs)
-        for a in alphas:
-            coverage[a].append(results[a][0])
-            set_size[a].append(results[a][1])
-            class_miscov[a].append(results[a][2])
+        for m in methods:
+            for a in alphas:
+                agg[m][a].append(results[m][a])
 
-    print(f"\nResults over {len(seeds)} seeds (mean +/- std):")
-    print("alpha  target  coverage      avg_set_size")
-    for a in alphas:
-        cov = np.array(coverage[a])
-        sizes = np.array(set_size[a])
-        print(f"{a:.2f}    {1 - a:.0%}    {cov.mean():.2f} +/- {cov.std():.2f}   "
-              f"{sizes.mean():.1f} +/- {sizes.std():.1f}")
-
-    print(f"\nPer-class miscoverage_ps (mean over {len(seeds)} seeds):")
-    for a in alphas:
-        per_class = np.stack(class_miscov[a]).mean(0)
-        print(f"alpha={a:.2f}: "
-              + np.array2string(per_class, precision=2, floatmode="fixed"))
+    for m in methods:
+        _report(m, agg[m], alphas, len(seeds))
 
 
 if __name__ == "__main__":
