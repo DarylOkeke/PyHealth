@@ -98,7 +98,7 @@ def run_seed(samples, seed: int, alphas: list[float], epochs: int) -> dict:
     test_loader = get_dataloader(test_data, batch_size=32, shuffle=False)
 
     model = Transformer(dataset=samples)
-    # Imbalanced task -- monitor AUROC, not accuracy (must be in metrics to be computed).
+    # Imbalanced task: monitor AUROC, not accuracy (must be in the metrics list).
     Trainer(
         model=model,
         metrics=["roc_auc_weighted_ovr", "f1_macro", "accuracy"],
@@ -165,13 +165,14 @@ def main(
     print(f"\nPer-class miscoverage_ps (mean over {len(seeds)} seeds):")
     for a in alphas:
         per_class = np.stack(class_miscov[a]).mean(0)
-        print(f"alpha={a:.2f}: {np.array2string(per_class, precision=2, floatmode='fixed')}"
-              f"  -> death class (idx {DEATH_CLASS}) = {per_class[DEATH_CLASS]:.2f}")
+        arr = np.array2string(per_class, precision=2, floatmode="fixed")
+        print(f"alpha={a:.2f}: {arr}  "
+              f"-> death class (idx {DEATH_CLASS}) = {per_class[DEATH_CLASS]:.2f}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Split conformal prediction for MIMIC-IV next-visit mortality prediction."
+        description="Split conformal prediction for MIMIC-IV next-visit mortality."
     )
     parser.add_argument(
         "--root",
