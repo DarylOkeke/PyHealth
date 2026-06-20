@@ -1,23 +1,14 @@
-"""Single runner for the conformal benchmark: seed, smoke, and real grid runs.
+"""Run the conformal benchmark grid (or a slice) and write results.csv.
 
-Loops dataset x tasks x models x modes (all alphas) x seeds and persists to results.csv.
-Operating modes:
-  * --init: (re)seed results.csv with the planned grid (all cells, results blank) and exit.
-  * real (default): demo=False -> validation gate live (coverage miss -> status=flagged /
-    validation_passed=false), rows stamped run_id/date_run/commit_hash, upserted into
-    results.csv.
-  * --demo: validation informational, results.csv NOT written -- prints per-cell status +
-    cal counts. Slice with --tasks/--models/--modes (+ --dev/--epochs/--seeds) to smoke a
-    code path before a full run.
-
-MIMIC-III is deferred (not on the cluster); default dataset is mimic4.
+Loops dataset x tasks x models x modes (all alphas) x seeds. --init seeds the planned
+results.csv; --demo runs without writing (validation informational). MIMIC-III is deferred;
+default dataset is mimic4.
 
 Usage:
-    python run_grid.py --init                                  # seed results.csv
-    python run_grid.py --root /projects/.../mimiciv/2.2        # full mimic4 grid, 5 seeds
-    python run_grid.py --root /projects/.../mimiciv/2.2 --tasks mortality   # scale-check
-    python run_grid.py --root /projects/.../mimiciv/2.2 --demo --epochs 1 --seeds 0 \
-        --tasks mortality --modes class-conditional            # smoke, nothing written
+    python run_grid.py --init
+    python run_grid.py --root /path/to/mimiciv/2.2
+    python run_grid.py --root /path/to/mimiciv/2.2 --tasks mortality
+    python run_grid.py --root /path/to/mimiciv/2.2 --demo --epochs 1 --seeds 0
 """
 
 from __future__ import annotations

@@ -1,10 +1,9 @@
 """Split-conformal benchmark engine for PyHealth EHR tasks.
 
 Generalizes the three reference cells (full_examples/{los,mortality,readmission}_mimic4_
-conformal.py) into one pipeline parameterized by dataset x task x model x method. Seeds
-loop outside, alphas inside: the base model trains once per seed, then each (mode, alpha)
-is calibrated on the held-out calibration split. run_cell returns one result row per
-(mode, alpha); run_grid.py drives it and persists to results.csv.
+conformal.py) into one pipeline over dataset x task x model x method. run_cell trains the
+base model per seed, calibrates each (mode, alpha), and returns one result row per
+(mode, alpha); run_grid.py drives it and writes results.csv.
 """
 
 from __future__ import annotations
@@ -60,7 +59,7 @@ TASK_CLASSES = {
 
 
 def label_calibrator(model, alpha):
-    """LABEL set predictor. Swap-in slot for APS/RAPS."""
+    """LABEL set predictor."""
     return LABEL(model, alpha=alpha)
 
 
@@ -108,7 +107,7 @@ def load_samples(dataset, task, root, dev):
 # --- validation (coverage gate) ------------------------------------------
 
 def coverage_tolerance(n_cal):
-    """Looser for small cal sets, tighter for large; ~3x binomial coverage SE."""
+    """Coverage-check tolerance, scaled by calibration size."""
     if n_cal <= 0:
         return 0.25
     return min(0.25, max(0.02, 3.0 * math.sqrt(0.25 / n_cal)))
@@ -174,7 +173,7 @@ def _split_issue(name, counts):
 
 
 def _split_issue_fast(name, split, label_key):
-    """Same check as _split_issue but early-exits once 2 distinct classes are seen."""
+    """Describe the split if it is empty or has < 2 classes present, else None."""
     n = len(split)
     if n == 0:
         return f"{name}(N=0, classes=0)"
@@ -187,12 +186,10 @@ def _split_issue_fast(name, split, label_key):
 
 
 def run_seed(samples, task, model_name, method, modes, alphas, seed, epochs):
-    """Train one base model and calibrate every (mode, alpha) for a single seed.
+    """Train the base model and calibrate every (mode, alpha) for one seed.
 
-    Returns (cal_counts, {mode: {alpha: outcome}}); outcome has status in
-    {ran, skipped, errored} plus coverage / set_size / per_class_miscov / reason.
-    A split that is empty or single-class skips the cell before training;
-    class-conditional with too few samples in the rarest cal class is skipped too.
+    Returns (cal_counts, {mode: {alpha: outcome}}); outcome status is
+    ran / skipped / errored, with coverage / set_size / per_class_miscov / reason.
     """
     random.seed(seed)
     np.random.seed(seed)
@@ -269,7 +266,7 @@ def _cell_id(dataset, task, model_name, method, mode):
 
 
 def _aggregate(per_seed, mode, alpha):
-    """Aggregate one (mode, alpha) across seeds; any non-ran seed propagates."""
+    """Aggregate one (mode, alpha) across seeds."""
     outs = [s[mode][alpha] for s in per_seed]
     if {o["status"] for o in outs} != {"ran"}:
         return next(o for o in outs if o["status"] != "ran")
@@ -287,11 +284,7 @@ def _aggregate(per_seed, mode, alpha):
 
 def run_cell(dataset, task, model_name, method, modes, alphas, seeds, epochs,
              root, dev, demo=False):
-    """Run all seeds for one cell; return one rich row per (mode, alpha).
-
-    Rows carry the results.csv columns plus cal_counts + detail. A ran cell failing the
-    coverage check is flagged on full data; on the demo the check is informational.
-    """
+    """Run all seeds for one cell; return one row per (mode, alpha)."""
     samples = load_samples(dataset, task, root, dev)
     print(f"Samples: {len(samples)}")
     per_seed = []

@@ -1,8 +1,7 @@
-"""Grid axes for the conformal-prediction EHR benchmark.
+"""Grid axes for the conformal EHR benchmark.
 
-Single source of truth for the cell axes. framework.py maps these names to PyHealth
-classes; seed_grid.py expands them into results.csv. Change an axis here and both the
-runnable grid and the planned CSV follow.
+Single source of truth for the cell axes: framework.py maps these names to PyHealth
+classes and run_grid.py expands them into results.csv.
 """
 
 DATASETS = ["mimic3", "mimic4"]
@@ -31,7 +30,7 @@ MONITOR = {
     "readmission": "roc_auc_weighted_ovr",
 }
 
-# task -> training metrics (must contain the monitor)
+# task -> training metrics
 METRICS = {
     "los": ["f1_macro", "accuracy"],
     "mortality": ["roc_auc_weighted_ovr", "f1_macro", "accuracy"],
