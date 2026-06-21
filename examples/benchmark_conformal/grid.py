@@ -4,7 +4,7 @@ Single source of truth for the cell axes: framework.py maps these names to PyHea
 classes and run_grid.py expands them into results.csv.
 """
 
-DATASETS = ["mimic3", "mimic4"]
+DATASETS = ["mimic3", "mimic4", "eicu"]
 TASKS = ["los", "mortality", "readmission"]
 MODELS = ["Transformer", "RNN", "RETAIN"]
 METHOD = "LABEL"
@@ -14,7 +14,12 @@ SEEDS = [0, 1, 2, 3, 4]
 RATIOS = [0.6, 0.1, 0.1, 0.2]
 SPLIT = "patient 0.6/0.1/0.1/0.2"
 
-EHR_TABLES = ["diagnoses_icd", "procedures_icd", "prescriptions"]
+# dataset -> tables to load
+TABLES = {
+    "mimic3": ["diagnoses_icd", "procedures_icd", "prescriptions"],
+    "mimic4": ["diagnoses_icd", "procedures_icd", "prescriptions"],
+    "eicu": ["diagnosis", "medication", "physicalexam"],
+}
 READMISSION_WINDOW_DAYS = 30
 
 # task -> native output type

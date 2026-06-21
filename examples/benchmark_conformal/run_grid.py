@@ -58,12 +58,25 @@ def planned_rows():
 
 
 def seed_results():
-    rows = list(planned_rows())
+    """Add planned rows for cells not already in results.csv; never overwrite existing."""
+    table = {}
+    columns = RESULTS_COLUMNS
+    if RESULTS_CSV.exists():
+        with open(RESULTS_CSV, newline="") as f:
+            reader = csv.DictReader(f)
+            columns = reader.fieldnames or RESULTS_COLUMNS
+            table = {(r["cell_id"], r["mode"], r["alpha"]): r for r in reader}
+    added = 0
+    for row in planned_rows():
+        key = (row["cell_id"], row["mode"], str(row["alpha"]))
+        if key not in table:
+            table[key] = row
+            added += 1
     with open(RESULTS_CSV, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=RESULTS_COLUMNS)
+        writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
-        writer.writerows(rows)
-    print(f"seeded results.csv: {len(rows)} planned rows")
+        writer.writerows(table.values())
+    print(f"seeded results.csv: +{added} planned rows ({len(table)} total)")
 
 
 def upsert_results(rows):

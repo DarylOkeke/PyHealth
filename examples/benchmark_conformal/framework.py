@@ -21,6 +21,7 @@ from pyhealth.calib.predictionset import LABEL
 from pyhealth.datasets import (
     MIMIC3Dataset,
     MIMIC4Dataset,
+    eICUDataset,
     get_dataloader,
     split_by_patient_conformal,
 )
@@ -31,10 +32,13 @@ from pyhealth.metrics.prediction_set import (
 )
 from pyhealth.models import RETAIN, RNN, Transformer
 from pyhealth.tasks import (
+    LengthOfStayPredictioneICU,
     LengthOfStayPredictionMIMIC3,
     LengthOfStayPredictionMIMIC4,
+    MortalityPredictionEICU,
     MortalityPredictionMIMIC3,
     MortalityPredictionMIMIC4,
+    ReadmissionPredictionEICU,
     ReadmissionPredictionMIMIC3,
     ReadmissionPredictionMIMIC4,
 )
@@ -51,10 +55,13 @@ MODELS = {"Transformer": Transformer, "RNN": RNN, "RETAIN": RETAIN}
 TASK_CLASSES = {
     ("mimic3", "los"): LengthOfStayPredictionMIMIC3,
     ("mimic4", "los"): LengthOfStayPredictionMIMIC4,
+    ("eicu", "los"): LengthOfStayPredictioneICU,
     ("mimic3", "mortality"): MortalityPredictionMIMIC3,
     ("mimic4", "mortality"): MortalityPredictionMIMIC4,
+    ("eicu", "mortality"): MortalityPredictionEICU,
     ("mimic3", "readmission"): ReadmissionPredictionMIMIC3,
     ("mimic4", "readmission"): ReadmissionPredictionMIMIC4,
+    ("eicu", "readmission"): ReadmissionPredictionEICU,
 }
 
 
@@ -88,7 +95,7 @@ def build_task(dataset, task):
     task_cls = TASK_CLASSES[(dataset, task)]
     if grid.OUTPUT_TYPE[task] == "binary":
         task_cls = as_multiclass(task_cls, grid.LABEL_KEY[task])
-    if task == "readmission":
+    if task == "readmission" and dataset != "eicu":
         return task_cls(window=timedelta(days=grid.READMISSION_WINDOW_DAYS))
     return task_cls()
 
@@ -96,9 +103,11 @@ def build_task(dataset, task):
 def load_samples(dataset, task, root, dev):
     """Load the base dataset and apply the task, returning the SampleDataset."""
     if dataset == "mimic4":
-        base = MIMIC4Dataset(ehr_root=root, ehr_tables=grid.EHR_TABLES, dev=dev)
+        base = MIMIC4Dataset(ehr_root=root, ehr_tables=grid.TABLES[dataset], dev=dev)
     elif dataset == "mimic3":
-        base = MIMIC3Dataset(root=root, tables=grid.EHR_TABLES, dev=dev)
+        base = MIMIC3Dataset(root=root, tables=grid.TABLES[dataset], dev=dev)
+    elif dataset == "eicu":
+        base = eICUDataset(root=root, tables=grid.TABLES[dataset], dev=dev)
     else:
         raise ValueError(f"unknown dataset {dataset}")
     return base.set_task(build_task(dataset, task))
