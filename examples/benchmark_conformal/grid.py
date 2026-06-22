@@ -7,7 +7,7 @@ classes and run_grid.py expands them into results.csv.
 DATASETS = ["mimic3", "mimic4", "eicu"]
 TASKS = ["los", "mortality", "readmission"]
 MODELS = ["Transformer", "RNN", "RETAIN"]
-METHOD = "LABEL"
+METHODS = ["LABEL", "APS", "RAPS"]
 MODES = ["marginal", "class-conditional"]
 ALPHAS = [0.2, 0.1, 0.05, 0.01]
 SEEDS = [0, 1, 2, 3, 4]

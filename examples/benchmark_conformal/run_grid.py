@@ -1,13 +1,14 @@
 """Run the conformal benchmark grid (or a slice) and write results.csv.
 
-Loops dataset x tasks x models x modes (all alphas) x seeds. --init seeds the planned
-results.csv; --demo runs without writing (validation informational). MIMIC-III is deferred;
-default dataset is mimic4.
+Loops dataset x tasks x models x methods x modes (all alphas) x seeds. The model trains
+once per (task, model, seed); LABEL/APS/RAPS calibrate off it. --init seeds the planned
+results.csv; --demo runs without writing (validation informational).
 
 Usage:
     python run_grid.py --init
     python run_grid.py --root /path/to/mimiciv/2.2
     python run_grid.py --root /path/to/mimiciv/2.2 --tasks mortality
+    python run_grid.py --root /path/to/mimiciv/2.2 --method LABEL
     python run_grid.py --root /path/to/mimiciv/2.2 --demo --epochs 1 --seeds 0
 """
 
@@ -40,21 +41,24 @@ def planned_rows():
     for dataset in grid.DATASETS:
         for task in grid.TASKS:
             for model in grid.MODELS:
-                for mode in grid.MODES:
-                    cell = f"{dataset}-{task}-{model}-{grid.METHOD}-{mode}"
-                    for alpha in grid.ALPHAS:
-                        yield {
-                            "cell_id": cell, "dataset": dataset, "task": task,
-                            "output_type": grid.OUTPUT_TYPE[task], "model": model,
-                            "split": grid.SPLIT, "cal_separate_from_val": "yes",
-                            "method": grid.METHOD, "mode": mode, "alpha": alpha,
-                            "target_coverage": round(1 - alpha, 2),
-                            "coverage_mean": "", "coverage_std": "", "avg_set_size": "",
-                            "per_class_miscov": "", "worst_class_miscov": "",
-                            "monitor": grid.MONITOR[task], "seeds": seeds,
-                            "status": "planned", "validation_passed": "",
-                            "run_id": "", "date_run": "", "commit_hash": "",
-                        }
+                for method in grid.METHODS:
+                    modes = grid.MODES if method == "LABEL" else ["marginal"]
+                    for mode in modes:
+                        cell = f"{dataset}-{task}-{model}-{method}-{mode}"
+                        for alpha in grid.ALPHAS:
+                            yield {
+                                "cell_id": cell, "dataset": dataset, "task": task,
+                                "output_type": grid.OUTPUT_TYPE[task], "model": model,
+                                "split": grid.SPLIT, "cal_separate_from_val": "yes",
+                                "method": method, "mode": mode, "alpha": alpha,
+                                "target_coverage": round(1 - alpha, 2),
+                                "coverage_mean": "", "coverage_std": "",
+                                "avg_set_size": "", "per_class_miscov": "",
+                                "worst_class_miscov": "", "monitor": grid.MONITOR[task],
+                                "seeds": seeds, "status": "planned",
+                                "validation_passed": "", "run_id": "", "date_run": "",
+                                "commit_hash": "",
+                            }
 
 
 def seed_results():
@@ -114,7 +118,8 @@ def main():
     p.add_argument("--modes", default=",".join(grid.MODES))
     p.add_argument("--seeds", default=",".join(str(s) for s in grid.SEEDS))
     p.add_argument("--epochs", type=int, default=10)
-    p.add_argument("--method", default=grid.METHOD, choices=list(framework.METHODS))
+    p.add_argument("--method", default=None, choices=list(framework.METHODS),
+                   help="restrict to one method (default: all of grid.METHODS)")
     p.add_argument("--dev", action="store_true", help="subsample the dataset")
     p.add_argument("--demo", action="store_true",
                    help="smoke run: validation informational, results.csv not written")
@@ -131,29 +136,32 @@ def main():
 
     tasks = args.tasks.split(",")
     models = args.models.split(",")
-    modes = ["marginal"] if args.method != "LABEL" else args.modes.split(",")
+    methods = grid.METHODS if args.method is None else [args.method]
+    label_modes = args.modes.split(",")
     seeds = [int(s) for s in args.seeds.split(",")]
     prov = {
         "run_id": args.run_id,
         "date_run": datetime.date.today().isoformat(),
         "commit_hash": _commit_hash(),
     }
-    print(f"{'SMOKE' if args.demo else 'GRID'} dataset={args.dataset} method={args.method} "
-          f"tasks={tasks} models={models} modes={modes} seeds={seeds} "
+    print(f"{'SMOKE' if args.demo else 'GRID'} dataset={args.dataset} methods={methods} "
+          f"tasks={tasks} models={models} modes={label_modes} seeds={seeds} "
           f"epochs={args.epochs} prov={prov}", flush=True)
 
+    base = framework.load_base_dataset(args.dataset, args.root, args.dev)
     total = {}
     for task in tasks:
+        samples = base.set_task(framework.build_task(args.dataset, task))
+        print(f"\n#### {args.dataset} | {task} | Samples: {len(samples)} ####", flush=True)
         for model in models:
-            print(f"\n#### {args.dataset} | {task} | {model} ####", flush=True)
+            print(f"## model={model} ##", flush=True)
             rows = framework.run_cell(
-                args.dataset, task, model, args.method, modes, grid.ALPHAS,
-                seeds=seeds, epochs=args.epochs, root=args.root,
-                dev=args.dev, demo=args.demo,
+                args.dataset, task, model, samples, methods, label_modes, grid.ALPHAS,
+                seeds=seeds, epochs=args.epochs, demo=args.demo,
             )
             if args.demo:
                 for r in rows:
-                    print(f"  {r['mode']} a={r['alpha']}: {r['status']} "
+                    print(f"  {r['method']}/{r['mode']} a={r['alpha']}: {r['status']} "
                           f"cov={r['coverage_mean']} size={r['avg_set_size']} "
                           f"| {r['detail']}", flush=True)
                 print(f"  cal per-class counts: {rows[0].get('cal_counts')}", flush=True)

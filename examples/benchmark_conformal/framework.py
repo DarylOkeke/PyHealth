@@ -2,8 +2,9 @@
 
 Generalizes the three reference cells (full_examples/{los,mortality,readmission}_mimic4_
 conformal.py) into one pipeline over dataset x task x model x method. run_cell trains the
-base model per seed, calibrates each (mode, alpha), and returns one result row per
-(mode, alpha); run_grid.py drives it and writes results.csv.
+base model once per seed and calibrates every (method, mode, alpha) from it -- LABEL, APS,
+and RAPS are all downstream of one training run -- returning one row per (method, mode,
+alpha); run_grid.py drives it and writes results.csv.
 """
 
 from __future__ import annotations
@@ -173,17 +174,15 @@ def build_task(dataset, task):
     return task_cls()
 
 
-def load_samples(dataset, task, root, dev):
-    """Load the base dataset and apply the task, returning the SampleDataset."""
+def load_base_dataset(dataset, root, dev):
+    """Load the base EHR dataset; task-independent, so built once and reused across tasks."""
     if dataset == "mimic4":
-        base = MIMIC4Dataset(ehr_root=root, ehr_tables=grid.TABLES[dataset], dev=dev)
-    elif dataset == "mimic3":
-        base = MIMIC3Dataset(root=root, tables=grid.TABLES[dataset], dev=dev)
-    elif dataset == "eicu":
-        base = eICUDataset(root=root, tables=grid.TABLES[dataset], dev=dev)
-    else:
-        raise ValueError(f"unknown dataset {dataset}")
-    return base.set_task(build_task(dataset, task))
+        return MIMIC4Dataset(ehr_root=root, ehr_tables=grid.TABLES[dataset], dev=dev)
+    if dataset == "mimic3":
+        return MIMIC3Dataset(root=root, tables=grid.TABLES[dataset], dev=dev)
+    if dataset == "eicu":
+        return eICUDataset(root=root, tables=grid.TABLES[dataset], dev=dev)
+    raise ValueError(f"unknown dataset {dataset}")
 
 
 # --- validation (coverage gate) ------------------------------------------
@@ -267,10 +266,11 @@ def _split_issue_fast(name, split, label_key):
     return f"{name}(N={n}, classes={len(seen)})"
 
 
-def run_seed(samples, task, model_name, method, modes, alphas, seed, epochs):
-    """Train the base model and calibrate every (mode, alpha) for one seed.
+def run_seed(samples, task, model_name, method_modes, alphas, seed, epochs):
+    """Train the base model once and calibrate every (method, mode, alpha) for one seed.
 
-    Returns (cal_counts, {mode: {alpha: outcome}}); outcome status is
+    method_modes is a list of (method, mode) pairs; all share the single trained model.
+    Returns (cal_counts, {(method, mode): {alpha: outcome}}); outcome status is
     ran / skipped / errored, with coverage / set_size / per_class_miscov / reason.
     """
     random.seed(seed)
@@ -296,8 +296,8 @@ def run_seed(samples, task, model_name, method, modes, alphas, seed, epochs):
         issues.append(iss)
     if issues:
         reason = "insufficient samples (" + "; ".join(issues) + ")"
-        skipped = {m: {a: {"status": "skipped", "reason": reason} for a in alphas}
-                   for m in modes}
+        skipped = {km: {a: {"status": "skipped", "reason": reason} for a in alphas}
+                   for km in method_modes}
         return cal_counts, skipped
 
     train_loader = get_dataloader(train_data, batch_size=32, shuffle=True)
@@ -314,13 +314,13 @@ def run_seed(samples, task, model_name, method, modes, alphas, seed, epochs):
     )
 
     min_count = min(cal_counts)
-    outcomes = {mode: {} for mode in modes}
-    for mode in modes:
+    outcomes = {km: {} for km in method_modes}
+    for method, mode in method_modes:
         for alpha in alphas:
             if mode == "class-conditional":
                 required = math.ceil(1.0 / alpha)
                 if min_count < required:
-                    outcomes[mode][alpha] = {
+                    outcomes[(method, mode)][alpha] = {
                         "status": "skipped",
                         "reason": f"insufficient cal-class samples "
                                   f"(min_class={min_count} < ceil(1/alpha)={required})",
@@ -330,14 +330,15 @@ def run_seed(samples, task, model_name, method, modes, alphas, seed, epochs):
                 cov, set_size, per_class = evaluate(
                     model, method, mode, alpha, n_classes, cal_data, test_loader
                 )
-                outcomes[mode][alpha] = {
+                outcomes[(method, mode)][alpha] = {
                     "status": "ran",
                     "coverage": float(cov),
                     "set_size": float(set_size),
                     "per_class_miscov": [float(x) for x in per_class],
                 }
             except Exception as exc:
-                outcomes[mode][alpha] = {"status": "errored", "reason": repr(exc)}
+                outcomes[(method, mode)][alpha] = {"status": "errored",
+                                                   "reason": repr(exc)}
     return cal_counts, outcomes
 
 
@@ -347,9 +348,9 @@ def _cell_id(dataset, task, model_name, method, mode):
     return f"{dataset}-{task}-{model_name}-{method}-{mode}"
 
 
-def _aggregate(per_seed, mode, alpha):
-    """Aggregate one (mode, alpha) across seeds."""
-    outs = [s[mode][alpha] for s in per_seed]
+def _aggregate(per_seed, key, alpha):
+    """Aggregate one (method, mode) `key` at one alpha across seeds."""
+    outs = [s[key][alpha] for s in per_seed]
     if {o["status"] for o in outs} != {"ran"}:
         return next(o for o in outs if o["status"] != "ran")
     covs = np.array([o["coverage"] for o in outs])
@@ -364,24 +365,29 @@ def _aggregate(per_seed, mode, alpha):
     }
 
 
-def run_cell(dataset, task, model_name, method, modes, alphas, seeds, epochs,
-             root, dev, demo=False):
-    """Run all seeds for one cell; return one row per (mode, alpha)."""
-    samples = load_samples(dataset, task, root, dev)
-    print(f"Samples: {len(samples)}")
+def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, epochs,
+             demo=False):
+    """Run all seeds for one (dataset, task, model); one row per (method, mode, alpha).
+
+    Trains once per seed; the methods all calibrate off that model. LABEL uses `modes`;
+    APS/RAPS are marginal only.
+    """
+    method_modes = [(method, mode)
+                    for method in methods
+                    for mode in (modes if method == "LABEL" else ["marginal"])]
     per_seed = []
     cal_counts = None
     for seed in seeds:
         cal_counts, outcomes = run_seed(
-            samples, task, model_name, method, modes, alphas, seed, epochs
+            samples, task, model_name, method_modes, alphas, seed, epochs
         )
         per_seed.append(outcomes)
     n_cal = sum(cal_counts) if cal_counts else 0
 
     rows = []
-    for mode in modes:
+    for method, mode in method_modes:
         for alpha in alphas:
-            agg = _aggregate(per_seed, mode, alpha)
+            agg = _aggregate(per_seed, (method, mode), alpha)
             row = {
                 "cell_id": _cell_id(dataset, task, model_name, method, mode),
                 "dataset": dataset, "task": task,
