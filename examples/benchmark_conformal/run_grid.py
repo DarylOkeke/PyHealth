@@ -118,7 +118,7 @@ def main():
     p.add_argument("--modes", default=",".join(grid.MODES))
     p.add_argument("--seeds", default=",".join(str(s) for s in grid.SEEDS))
     p.add_argument("--epochs", type=int, default=10)
-    p.add_argument("--method", default=None, choices=list(framework.METHODS),
+    p.add_argument("--method", default=None, choices=list(framework.SCORERS),
                    help="restrict to one method (default: all of grid.METHODS)")
     p.add_argument("--dev", action="store_true", help="subsample the dataset")
     p.add_argument("--demo", action="store_true",

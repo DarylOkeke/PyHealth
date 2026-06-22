@@ -18,8 +18,6 @@ import numpy as np
 import torch
 
 import grid
-from pyhealth.calib.base_classes import SetPredictor
-from pyhealth.calib.predictionset import LABEL
 from pyhealth.calib.predictionset.base_conformal import _query_quantile
 from pyhealth.calib.utils import prepare_numpy_dataset
 from pyhealth.datasets import (
@@ -85,66 +83,30 @@ def aps_scores(y_prob, lam=0.0, k_reg=0):
     return scores
 
 
-class APS(SetPredictor):
-    """Adaptive Prediction Sets (Romano 2020); RAPS (Angelopoulos 2020) when lam > 0.
-
-    Marginal, non-randomized; mirrors LABEL with the aps_scores score.
-    """
-
-    def __init__(self, model, alpha, lam=0.0, k_reg=0, debug=False, **kwargs):
-        super().__init__(model, **kwargs)
-        if model.mode != "multiclass":
-            raise NotImplementedError()
-        if not isinstance(alpha, float):
-            raise NotImplementedError("APS/RAPS support marginal coverage only")
-        self.mode = self.model.mode
-        for param in model.parameters():
-            param.requires_grad = False
-        self.model.eval()
-        self.device = model.device
-        self.debug = debug
-        self.alpha = alpha
-        self.lam = lam
-        self.k_reg = k_reg
-        self.t = None
-
-    def calibrate(self, cal_dataset):
-        cal = prepare_numpy_dataset(
-            self.model, cal_dataset, ["y_prob", "y_true"], debug=self.debug
-        )
-        scores = aps_scores(cal["y_prob"], self.lam, self.k_reg)
-        n = len(cal["y_true"])
-        self.t = _query_quantile(scores[np.arange(n), cal["y_true"]], self.alpha)
-
-    def forward(self, **kwargs):
-        pred = self.model(**kwargs)
-        scores = aps_scores(pred["y_prob"].cpu().numpy(), self.lam, self.k_reg)
-        pred["y_predset"] = torch.as_tensor(
-            scores <= self.t, device=pred["y_prob"].device
-        )
-        return pred
+def label_scores(y_prob):
+    """LABEL non-conformity scores (N, K): 1 - p(class). Higher = less conforming."""
+    return 1.0 - np.asarray(y_prob, dtype=float)
 
 
-def label_calibrator(model, alpha):
-    """LABEL set predictor."""
-    return LABEL(model, alpha=alpha)
-
-
-def aps_calibrator(model, alpha):
-    """APS set predictor (marginal, non-randomized)."""
-    return APS(model, alpha)
-
-
-def raps_calibrator(model, alpha):
-    """RAPS set predictor (marginal, non-randomized)."""
-    return APS(model, alpha, lam=grid.RAPS_LAMBDA, k_reg=grid.RAPS_K_REG)
-
-
-METHODS = {
-    "LABEL": label_calibrator,
-    "APS": aps_calibrator,
-    "RAPS": raps_calibrator,
+# method -> per-class non-conformity scores (N, K) from predicted probabilities
+SCORERS = {
+    "LABEL": label_scores,
+    "APS": lambda y_prob: aps_scores(y_prob, 0.0, 0),
+    "RAPS": lambda y_prob: aps_scores(y_prob, grid.RAPS_LAMBDA, grid.RAPS_K_REG),
 }
+
+
+def conformal_threshold(cal_scores, cal_y, mode, alpha, n_classes):
+    """Split-conformal threshold from calibration scores; mirrors LABEL.calibrate.
+
+    marginal -> one quantile of the true-class scores (scalar); class-conditional ->
+    the alpha-quantile within each class (per-class vector, broadcast in the set rule).
+    """
+    if mode == "marginal":
+        return _query_quantile(cal_scores[np.arange(len(cal_y)), cal_y], alpha)
+    return np.array([
+        _query_quantile(cal_scores[cal_y == k, k], alpha) for k in range(n_classes)
+    ])
 
 
 # --- task / dataset construction -----------------------------------------
@@ -213,25 +175,17 @@ def validate_class_conditional(per_class_miscov, alpha, n_cal):
 
 # --- evaluation ----------------------------------------------------------
 
-def _alpha_arg(mode, alpha, n_classes):
-    """marginal -> float; class-conditional -> per-class array of length n_classes."""
-    return alpha if mode == "marginal" else [alpha] * n_classes
+def evaluate(cal_scores, cal_y, test_scores, test_y, mode, alpha, n_classes):
+    """Calibrate at (mode, alpha) on cached scores and score the test split.
 
-
-def evaluate(model, method, mode, alpha, n_classes, cal_data, test_loader):
-    """Calibrate `method` at `alpha`/`mode` and evaluate on the test split.
-
+    Set rule mirrors LABEL.forward: include class k iff score_k <= threshold (the
+    per-class threshold broadcasts for class-conditional).
     Returns (coverage, avg_set_size, per_class_miscoverage).
     """
-    calibrator = METHODS[method](model, _alpha_arg(mode, alpha, n_classes))
-    calibrator.calibrate(cal_dataset=cal_data)
-    y_true, _, _, extra = Trainer(model=calibrator, enable_logging=False).inference(
-        test_loader, additional_outputs=["y_predset"]
-    )
-    predset = extra["y_predset"]
-    y_true = np.asarray(y_true)
-    coverage = 1 - miscoverage_overall_ps(predset, y_true)
-    return coverage, size(predset), miscoverage_ps(predset, y_true)
+    t = conformal_threshold(cal_scores, cal_y, mode, alpha, n_classes)
+    predset = test_scores <= t
+    coverage = 1 - miscoverage_overall_ps(predset, test_y)
+    return coverage, size(predset), miscoverage_ps(predset, test_y)
 
 
 def _class_counts(split, label_key, n_classes):
@@ -302,7 +256,6 @@ def run_seed(samples, task, model_name, method_modes, alphas, seed, epochs):
 
     train_loader = get_dataloader(train_data, batch_size=32, shuffle=True)
     val_loader = get_dataloader(val_data, batch_size=32, shuffle=False)
-    test_loader = get_dataloader(test_data, batch_size=32, shuffle=False)
 
     model = MODELS[model_name](dataset=samples)
     Trainer(model=model, metrics=grid.METRICS[task]).train(
@@ -312,6 +265,13 @@ def run_seed(samples, task, model_name, method_modes, alphas, seed, epochs):
         monitor=grid.MONITOR[task],
         monitor_criterion="max",
     )
+
+    model.eval()
+    cal = prepare_numpy_dataset(model, cal_data, ["y_prob", "y_true"])
+    test = prepare_numpy_dataset(model, test_data, ["y_prob", "y_true"])
+    present = {m for m, _ in method_modes}
+    cal_scores = {m: SCORERS[m](cal["y_prob"]) for m in present}
+    test_scores = {m: SCORERS[m](test["y_prob"]) for m in present}
 
     min_count = min(cal_counts)
     outcomes = {km: {} for km in method_modes}
@@ -328,7 +288,9 @@ def run_seed(samples, task, model_name, method_modes, alphas, seed, epochs):
                     continue
             try:
                 cov, set_size, per_class = evaluate(
-                    model, method, mode, alpha, n_classes, cal_data, test_loader
+                    cal_scores[method], cal["y_true"],
+                    test_scores[method], test["y_true"],
+                    mode, alpha, n_classes,
                 )
                 outcomes[(method, mode)][alpha] = {
                     "status": "ran",
