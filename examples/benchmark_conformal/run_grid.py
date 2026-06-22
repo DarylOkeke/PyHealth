@@ -9,6 +9,7 @@ Usage:
     python run_grid.py --root /path/to/mimiciv/2.2
     python run_grid.py --root /path/to/mimiciv/2.2 --tasks mortality
     python run_grid.py --root /path/to/mimiciv/2.2 --method LABEL
+    python run_grid.py --root /path/to/mimiciv/2.2 --skip-done   # resume
     python run_grid.py --root /path/to/mimiciv/2.2 --demo --epochs 1 --seeds 0
 """
 
@@ -100,6 +101,20 @@ def upsert_results(rows):
         writer.writerows(table.values())
 
 
+def _done_cells(dataset):
+    """(task, model) pairs whose every results.csv row is already computed (not planned)."""
+    if not RESULTS_CSV.exists():
+        return set()
+    complete = {}
+    with open(RESULTS_CSV, newline="") as f:
+        for r in csv.DictReader(f):
+            if r["dataset"] != dataset:
+                continue
+            key = (r["task"], r["model"])
+            complete[key] = complete.get(key, True) and r["status"] != "planned"
+    return {k for k, ok in complete.items() if ok}
+
+
 def _commit_hash():
     try:
         return subprocess.check_output(
@@ -124,6 +139,8 @@ def main():
                    help="restrict to one method (default: all of grid.METHODS)")
     p.add_argument("--pred-cache", default=None,
                    help="dir to cache per-seed cal/test predictions (npz); skipped if unset")
+    p.add_argument("--skip-done", action="store_true",
+                   help="resume: skip (task,model) cells already fully computed in results.csv")
     p.add_argument("--dev", action="store_true", help="subsample the dataset")
     p.add_argument("--demo", action="store_true",
                    help="smoke run: validation informational, results.csv not written")
@@ -152,12 +169,20 @@ def main():
           f"tasks={tasks} models={models} modes={label_modes} seeds={seeds} "
           f"epochs={args.epochs} prov={prov}", flush=True)
 
+    done = _done_cells(args.dataset) if args.skip_done else set()
     base = framework.load_base_dataset(args.dataset, args.root, args.dev)
     total = {}
     for task in tasks:
+        if done and all((task, m) in done for m in models):
+            print(f"\n#### {args.dataset} | {task}: skip (all models complete) ####",
+                  flush=True)
+            continue
         samples = base.set_task(framework.build_task(args.dataset, task))
         print(f"\n#### {args.dataset} | {task} | Samples: {len(samples)} ####", flush=True)
         for model in models:
+            if (task, model) in done:
+                print(f"## model={model}: skip (already complete) ##", flush=True)
+                continue
             print(f"## model={model} ##", flush=True)
             rows = framework.run_cell(
                 args.dataset, task, model, samples, methods, label_modes, grid.ALPHAS,
