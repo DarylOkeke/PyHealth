@@ -17,7 +17,10 @@ import numpy as np
 import torch
 
 import grid
+from pyhealth.calib.base_classes import SetPredictor
 from pyhealth.calib.predictionset import LABEL
+from pyhealth.calib.predictionset.base_conformal import _query_quantile
+from pyhealth.calib.utils import prepare_numpy_dataset
 from pyhealth.datasets import (
     MIMIC3Dataset,
     MIMIC4Dataset,
@@ -65,12 +68,82 @@ TASK_CLASSES = {
 }
 
 
+def aps_scores(y_prob, lam=0.0, k_reg=0):
+    """APS/RAPS non-conformity scores (N, K): cumulative prob mass to each class.
+
+    tau_k = sum of probs ranked >= class k (incl. k), plus RAPS penalty
+    lam*max(0, rank_k - k_reg). lam=0 gives APS. Non-randomized.
+    """
+    y_prob = np.asarray(y_prob, dtype=float)
+    order = np.argsort(-y_prob, axis=1)
+    ordered = np.take_along_axis(y_prob, order, axis=1)
+    ranks = np.arange(1, y_prob.shape[1] + 1)
+    ordered_scores = np.cumsum(ordered, axis=1) + np.maximum(0.0, lam * (ranks - k_reg))
+    scores = np.empty_like(ordered_scores)
+    np.put_along_axis(scores, order, ordered_scores, axis=1)
+    return scores
+
+
+class APS(SetPredictor):
+    """Adaptive Prediction Sets (Romano 2020); RAPS (Angelopoulos 2020) when lam > 0.
+
+    Marginal, non-randomized; mirrors LABEL with the aps_scores score.
+    """
+
+    def __init__(self, model, alpha, lam=0.0, k_reg=0, debug=False, **kwargs):
+        super().__init__(model, **kwargs)
+        if model.mode != "multiclass":
+            raise NotImplementedError()
+        if not isinstance(alpha, float):
+            raise NotImplementedError("APS/RAPS support marginal coverage only")
+        self.mode = self.model.mode
+        for param in model.parameters():
+            param.requires_grad = False
+        self.model.eval()
+        self.device = model.device
+        self.debug = debug
+        self.alpha = alpha
+        self.lam = lam
+        self.k_reg = k_reg
+        self.t = None
+
+    def calibrate(self, cal_dataset):
+        cal = prepare_numpy_dataset(
+            self.model, cal_dataset, ["y_prob", "y_true"], debug=self.debug
+        )
+        scores = aps_scores(cal["y_prob"], self.lam, self.k_reg)
+        n = len(cal["y_true"])
+        self.t = _query_quantile(scores[np.arange(n), cal["y_true"]], self.alpha)
+
+    def forward(self, **kwargs):
+        pred = self.model(**kwargs)
+        scores = aps_scores(pred["y_prob"].cpu().numpy(), self.lam, self.k_reg)
+        pred["y_predset"] = torch.as_tensor(
+            scores <= self.t, device=pred["y_prob"].device
+        )
+        return pred
+
+
 def label_calibrator(model, alpha):
     """LABEL set predictor."""
     return LABEL(model, alpha=alpha)
 
 
-METHODS = {"LABEL": label_calibrator}
+def aps_calibrator(model, alpha):
+    """APS set predictor (marginal, non-randomized)."""
+    return APS(model, alpha)
+
+
+def raps_calibrator(model, alpha):
+    """RAPS set predictor (marginal, non-randomized)."""
+    return APS(model, alpha, lam=grid.RAPS_LAMBDA, k_reg=grid.RAPS_K_REG)
+
+
+METHODS = {
+    "LABEL": label_calibrator,
+    "APS": aps_calibrator,
+    "RAPS": raps_calibrator,
+}
 
 
 # --- task / dataset construction -----------------------------------------

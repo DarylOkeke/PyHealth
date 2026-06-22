@@ -22,6 +22,10 @@ TABLES = {
 }
 READMISSION_WINDOW_DAYS = 30
 
+# RAPS regularization (TorchCP penalty=0 default is degenerate = APS)
+RAPS_K_REG = 5
+RAPS_LAMBDA = 0.01
+
 # task -> native output type
 OUTPUT_TYPE = {"los": "multiclass", "mortality": "binary", "readmission": "binary"}
 

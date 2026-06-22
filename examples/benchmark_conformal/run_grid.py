@@ -114,6 +114,7 @@ def main():
     p.add_argument("--modes", default=",".join(grid.MODES))
     p.add_argument("--seeds", default=",".join(str(s) for s in grid.SEEDS))
     p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--method", default=grid.METHOD, choices=list(framework.METHODS))
     p.add_argument("--dev", action="store_true", help="subsample the dataset")
     p.add_argument("--demo", action="store_true",
                    help="smoke run: validation informational, results.csv not written")
@@ -130,23 +131,23 @@ def main():
 
     tasks = args.tasks.split(",")
     models = args.models.split(",")
-    modes = args.modes.split(",")
+    modes = ["marginal"] if args.method != "LABEL" else args.modes.split(",")
     seeds = [int(s) for s in args.seeds.split(",")]
     prov = {
         "run_id": args.run_id,
         "date_run": datetime.date.today().isoformat(),
         "commit_hash": _commit_hash(),
     }
-    print(f"{'SMOKE' if args.demo else 'GRID'} dataset={args.dataset} tasks={tasks} "
-          f"models={models} modes={modes} seeds={seeds} epochs={args.epochs} "
-          f"prov={prov}", flush=True)
+    print(f"{'SMOKE' if args.demo else 'GRID'} dataset={args.dataset} method={args.method} "
+          f"tasks={tasks} models={models} modes={modes} seeds={seeds} "
+          f"epochs={args.epochs} prov={prov}", flush=True)
 
     total = {}
     for task in tasks:
         for model in models:
             print(f"\n#### {args.dataset} | {task} | {model} ####", flush=True)
             rows = framework.run_cell(
-                args.dataset, task, model, grid.METHOD, modes, grid.ALPHAS,
+                args.dataset, task, model, args.method, modes, grid.ALPHAS,
                 seeds=seeds, epochs=args.epochs, root=args.root,
                 dev=args.dev, demo=args.demo,
             )
