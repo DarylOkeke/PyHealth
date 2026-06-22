@@ -398,7 +398,7 @@ def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, 
                 "method": method, "mode": mode, "alpha": alpha,
                 "target_coverage": round(1 - alpha, 2),
                 "coverage_mean": "", "coverage_std": "", "avg_set_size": "",
-                "per_class_miscov": "", "worst_class_miscov": "",
+                "per_class_miscov": "", "worst_class_miscov": "", "worst_class": "",
                 "monitor": grid.MONITOR[task], "seeds": f"{seeds[0]}-{seeds[-1]}",
                 "status": agg["status"], "validation_passed": "",
                 "run_id": "", "date_run": "", "commit_hash": "",
@@ -412,6 +412,7 @@ def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, 
                 row["avg_set_size"] = round(agg["avg_set_size"], 4)
                 row["per_class_miscov"] = " ".join(f"{x:.4f}" for x in per_class)
                 row["worst_class_miscov"] = round(max(per_class), 4)
+                row["worst_class"] = int(np.argmax(per_class))
                 if mode == "marginal":
                     ok, detail = validate_marginal(agg["coverage_mean"], alpha, n_cal)
                 else:

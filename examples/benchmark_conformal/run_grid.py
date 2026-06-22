@@ -31,8 +31,8 @@ RESULTS_COLUMNS = [
     "cell_id", "dataset", "task", "output_type", "model", "split",
     "cal_separate_from_val", "method", "mode", "alpha", "target_coverage",
     "coverage_mean", "coverage_std", "avg_set_size", "per_class_miscov",
-    "worst_class_miscov", "base_auroc", "base_f1", "monitor", "seeds", "status",
-    "validation_passed", "run_id", "date_run", "commit_hash",
+    "worst_class_miscov", "worst_class", "base_auroc", "base_f1", "monitor", "seeds",
+    "status", "validation_passed", "run_id", "date_run", "commit_hash",
 ]
 
 
@@ -55,8 +55,9 @@ def planned_rows():
                                 "target_coverage": round(1 - alpha, 2),
                                 "coverage_mean": "", "coverage_std": "",
                                 "avg_set_size": "", "per_class_miscov": "",
-                                "worst_class_miscov": "", "base_auroc": "",
-                                "base_f1": "", "monitor": grid.MONITOR[task],
+                                "worst_class_miscov": "", "worst_class": "",
+                                "base_auroc": "", "base_f1": "",
+                                "monitor": grid.MONITOR[task],
                                 "seeds": seeds, "status": "planned",
                                 "validation_passed": "", "run_id": "", "date_run": "",
                                 "commit_hash": "",
