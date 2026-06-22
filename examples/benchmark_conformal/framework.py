@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import random
 from datetime import timedelta
 
@@ -44,7 +45,7 @@ from pyhealth.tasks import (
     ReadmissionPredictionMIMIC3,
     ReadmissionPredictionMIMIC4,
 )
-from pyhealth.trainer import Trainer
+from pyhealth.trainer import Trainer, get_metrics_fn
 
 logging.getLogger("pyhealth").setLevel(logging.WARNING)
 
@@ -220,12 +221,37 @@ def _split_issue_fast(name, split, label_key):
     return f"{name}(N={n}, classes={len(seen)})"
 
 
-def run_seed(samples, task, model_name, method_modes, alphas, seed, epochs):
+def _save_predictions(pred_cache, dataset, task, model_name, seed, cal, test):
+    """Cache cal/test predictions (y_prob, y_true) so new methods/alphas need no retrain."""
+    os.makedirs(pred_cache, exist_ok=True)
+    path = os.path.join(pred_cache, f"{dataset}-{task}-{model_name}-seed{seed}.npz")
+    np.savez_compressed(
+        path,
+        cal_prob=cal["y_prob"], cal_y=cal["y_true"],
+        test_prob=test["y_prob"], test_y=test["y_true"],
+    )
+
+
+def _base_metrics(test):
+    """Base model's test discriminative performance (a model property, not a method)."""
+    try:
+        m = get_metrics_fn("multiclass")(
+            test["y_true"], test["y_prob"],
+            metrics=["roc_auc_weighted_ovr", "f1_macro"],
+        )
+        return {"base_auroc": float(m["roc_auc_weighted_ovr"]),
+                "base_f1": float(m["f1_macro"])}
+    except Exception:
+        return {"base_auroc": float("nan"), "base_f1": float("nan")}
+
+
+def run_seed(samples, dataset, task, model_name, method_modes, alphas, seed, epochs,
+             pred_cache=None):
     """Train the base model once and calibrate every (method, mode, alpha) for one seed.
 
     method_modes is a list of (method, mode) pairs; all share the single trained model.
-    Returns (cal_counts, {(method, mode): {alpha: outcome}}); outcome status is
-    ran / skipped / errored, with coverage / set_size / per_class_miscov / reason.
+    Returns (cal_counts, {(method, mode): {alpha: outcome}}, base_metrics); outcome status
+    is ran / skipped / errored, with coverage / set_size / per_class_miscov / reason.
     """
     random.seed(seed)
     np.random.seed(seed)
@@ -252,7 +278,7 @@ def run_seed(samples, task, model_name, method_modes, alphas, seed, epochs):
         reason = "insufficient samples (" + "; ".join(issues) + ")"
         skipped = {km: {a: {"status": "skipped", "reason": reason} for a in alphas}
                    for km in method_modes}
-        return cal_counts, skipped
+        return cal_counts, skipped, None
 
     train_loader = get_dataloader(train_data, batch_size=32, shuffle=True)
     val_loader = get_dataloader(val_data, batch_size=32, shuffle=False)
@@ -269,6 +295,9 @@ def run_seed(samples, task, model_name, method_modes, alphas, seed, epochs):
     model.eval()
     cal = prepare_numpy_dataset(model, cal_data, ["y_prob", "y_true"])
     test = prepare_numpy_dataset(model, test_data, ["y_prob", "y_true"])
+    if pred_cache:
+        _save_predictions(pred_cache, dataset, task, model_name, seed, cal, test)
+    base = _base_metrics(test)
     present = {m for m, _ in method_modes}
     cal_scores = {m: SCORERS[m](cal["y_prob"]) for m in present}
     test_scores = {m: SCORERS[m](test["y_prob"]) for m in present}
@@ -301,7 +330,7 @@ def run_seed(samples, task, model_name, method_modes, alphas, seed, epochs):
             except Exception as exc:
                 outcomes[(method, mode)][alpha] = {"status": "errored",
                                                    "reason": repr(exc)}
-    return cal_counts, outcomes
+    return cal_counts, outcomes, base
 
 
 # --- cell driver ---------------------------------------------------------
@@ -327,24 +356,35 @@ def _aggregate(per_seed, key, alpha):
     }
 
 
+def _agg_base(bases, key):
+    """Mean of a base metric across seeds; '' if none ran or all NaN."""
+    vals = [b[key] for b in bases if b is not None and not math.isnan(b[key])]
+    return round(float(np.mean(vals)), 4) if vals else ""
+
+
 def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, epochs,
-             demo=False):
+             demo=False, pred_cache=None):
     """Run all seeds for one (dataset, task, model); one row per (method, mode, alpha).
 
     Trains once per seed; the methods all calibrate off that model. LABEL uses `modes`;
-    APS/RAPS are marginal only.
+    APS/RAPS are marginal only. Caches predictions per seed when pred_cache is set.
     """
     method_modes = [(method, mode)
                     for method in methods
                     for mode in (modes if method == "LABEL" else ["marginal"])]
     per_seed = []
+    per_base = []
     cal_counts = None
     for seed in seeds:
-        cal_counts, outcomes = run_seed(
-            samples, task, model_name, method_modes, alphas, seed, epochs
+        cal_counts, outcomes, base = run_seed(
+            samples, dataset, task, model_name, method_modes, alphas, seed, epochs,
+            pred_cache=pred_cache,
         )
         per_seed.append(outcomes)
+        per_base.append(base)
     n_cal = sum(cal_counts) if cal_counts else 0
+    base_auroc = _agg_base(per_base, "base_auroc")
+    base_f1 = _agg_base(per_base, "base_f1")
 
     rows = []
     for method, mode in method_modes:
@@ -362,6 +402,7 @@ def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, 
                 "monitor": grid.MONITOR[task], "seeds": f"{seeds[0]}-{seeds[-1]}",
                 "status": agg["status"], "validation_passed": "",
                 "run_id": "", "date_run": "", "commit_hash": "",
+                "base_auroc": base_auroc, "base_f1": base_f1,
                 "cal_counts": cal_counts, "detail": agg.get("reason", ""),
             }
             if agg["status"] == "ran":
