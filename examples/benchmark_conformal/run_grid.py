@@ -30,9 +30,10 @@ RESULTS_CSV = Path(__file__).parent / "results.csv"
 RESULTS_COLUMNS = [
     "cell_id", "dataset", "task", "output_type", "model", "split",
     "cal_separate_from_val", "method", "mode", "alpha", "target_coverage",
-    "coverage_mean", "coverage_std", "avg_set_size", "per_class_miscov",
-    "worst_class_miscov", "worst_class", "base_auroc", "base_f1", "monitor", "seeds",
-    "status", "validation_passed", "run_id", "date_run", "commit_hash",
+    "coverage_mean", "coverage_std", "avg_set_size", "rejection_rate",
+    "per_class_miscov", "worst_class_miscov", "worst_class", "base_auroc", "base_f1",
+    "monitor", "seeds", "n_cal", "n_test", "status", "validation_passed",
+    "run_id", "date_run", "commit_hash",
 ]
 
 
@@ -54,10 +55,10 @@ def planned_rows():
                                 "method": method, "mode": mode, "alpha": alpha,
                                 "target_coverage": round(1 - alpha, 2),
                                 "coverage_mean": "", "coverage_std": "",
-                                "avg_set_size": "", "per_class_miscov": "",
-                                "worst_class_miscov": "", "worst_class": "",
-                                "base_auroc": "", "base_f1": "",
-                                "monitor": grid.MONITOR[task],
+                                "avg_set_size": "", "rejection_rate": "",
+                                "per_class_miscov": "", "worst_class_miscov": "",
+                                "worst_class": "", "base_auroc": "", "base_f1": "",
+                                "monitor": grid.MONITOR[task], "n_cal": "", "n_test": "",
                                 "seeds": seeds, "status": "planned",
                                 "validation_passed": "", "run_id": "", "date_run": "",
                                 "commit_hash": "",

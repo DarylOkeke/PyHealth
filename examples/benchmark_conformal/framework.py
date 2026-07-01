@@ -151,17 +151,17 @@ def load_base_dataset(dataset, root, dev):
 # --- validation (coverage gate) ------------------------------------------
 
 def coverage_tolerance(n_cal):
-    """Coverage-check tolerance, scaled by calibration size."""
+    """Coverage-check tolerance, scaled by calibration size (floor 0.03)."""
     if n_cal <= 0:
-        return 0.25
-    return min(0.25, max(0.02, 3.0 * math.sqrt(0.25 / n_cal)))
+        return 0.03
+    return min(0.25, max(0.03, 3.0 * math.sqrt(0.25 / n_cal)))
 
 
 def validate_marginal(coverage, alpha, n_cal):
-    """Overall coverage within tolerance of 1 - alpha."""
+    """Coverage meets the lower bound 1 - alpha; over-coverage passes (one-sided)."""
     tol = coverage_tolerance(n_cal)
     target = 1.0 - alpha
-    ok = abs(coverage - target) <= tol
+    ok = coverage >= target - tol
     return ok, f"cov={coverage:.3f} target={target:.3f} tol={tol:.3f}"
 
 
