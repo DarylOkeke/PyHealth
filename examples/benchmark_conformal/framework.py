@@ -232,6 +232,20 @@ def _save_predictions(pred_cache, dataset, task, model_name, seed, cal, test):
     )
 
 
+def _save_embeddings(pred_cache, dataset, task, model_name, seed, model, train, cal, test):
+    """Cache train/cal/test embeddings so embedding-based methods (ClusterLabel,
+    CovariateLabel, ...) can be re-scored off the cache without another forward pass."""
+    from pyhealth.calib.utils import extract_embeddings
+    dev = str(model.device)
+    path = os.path.join(pred_cache, f"{dataset}-{task}-{model_name}-seed{seed}-emb.npz")
+    np.savez_compressed(
+        path,
+        train_emb=extract_embeddings(model, train, device=dev),
+        cal_emb=extract_embeddings(model, cal, device=dev),
+        test_emb=extract_embeddings(model, test, device=dev),
+    )
+
+
 def _base_metrics(test):
     """Base model's test discriminative performance (a model property, not a method)."""
     try:
@@ -246,7 +260,7 @@ def _base_metrics(test):
 
 
 def run_seed(samples, dataset, task, model_name, method_modes, alphas, seed, epochs,
-             pred_cache=None):
+             pred_cache=None, cache_embeddings=False):
     """Train the base model once and calibrate every (method, mode, alpha) for one seed.
 
     method_modes is a list of (method, mode) pairs; all share the single trained model.
@@ -297,6 +311,9 @@ def run_seed(samples, dataset, task, model_name, method_modes, alphas, seed, epo
     test = prepare_numpy_dataset(model, test_data, ["y_prob", "y_true"])
     if pred_cache:
         _save_predictions(pred_cache, dataset, task, model_name, seed, cal, test)
+        if cache_embeddings:
+            _save_embeddings(pred_cache, dataset, task, model_name, seed, model,
+                             train_data, cal_data, test_data)
     base = _base_metrics(test)
     present = {m for m, _ in method_modes}
     cal_scores = {m: SCORERS[m](cal["y_prob"]) for m in present}
@@ -363,7 +380,7 @@ def _agg_base(bases, key):
 
 
 def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, epochs,
-             demo=False, pred_cache=None):
+             demo=False, pred_cache=None, cache_embeddings=False):
     """Run all seeds for one (dataset, task, model); one row per (method, mode, alpha).
 
     Trains once per seed; the methods all calibrate off that model. LABEL uses `modes`;
@@ -378,7 +395,7 @@ def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, 
     for seed in seeds:
         cal_counts, outcomes, base = run_seed(
             samples, dataset, task, model_name, method_modes, alphas, seed, epochs,
-            pred_cache=pred_cache,
+            pred_cache=pred_cache, cache_embeddings=cache_embeddings,
         )
         per_seed.append(outcomes)
         per_base.append(base)

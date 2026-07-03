@@ -141,6 +141,9 @@ def main():
                    help="restrict to one method (default: all of grid.METHODS)")
     p.add_argument("--pred-cache", default=None,
                    help="dir to cache per-seed cal/test predictions (npz); skipped if unset")
+    p.add_argument("--cache-embeddings", action="store_true",
+                   help="also cache train/cal/test embeddings (for ClusterLabel etc.); "
+                        "needs --pred-cache")
     p.add_argument("--skip-done", action="store_true",
                    help="resume: skip (task,model) cells already fully computed in results.csv")
     p.add_argument("--dev", action="store_true", help="subsample the dataset")
@@ -189,7 +192,7 @@ def main():
             rows = framework.run_cell(
                 args.dataset, task, model, samples, methods, label_modes, grid.ALPHAS,
                 seeds=seeds, epochs=args.epochs, demo=args.demo,
-                pred_cache=args.pred_cache,
+                pred_cache=args.pred_cache, cache_embeddings=args.cache_embeddings,
             )
             if args.demo:
                 for r in rows:
