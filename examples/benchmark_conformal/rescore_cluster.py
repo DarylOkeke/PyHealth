@@ -40,20 +40,24 @@ from pyhealth.metrics.prediction_set import (
 EMB_RE = re.compile(r"(mimic3|mimic4|eicu)-los-(\w+)-seed(\d+)-emb\.npz$")
 
 
-def cluster_label_predset(train_emb, cal_emb, test_emb, cal_prob, cal_y, test_prob,
-                          alpha, n_clusters, seed=42):
-    """PyHealth ClusterLabel, in NumPy: K-means on train+cal embeddings, a per-cluster
-    LABEL-score threshold, then each test point uses its own cluster's threshold."""
-    cal_scores = 1.0 - cal_prob[np.arange(len(cal_y)), cal_y]        # LABEL non-conformity
+def fit_clusters(train_emb, cal_emb, test_emb, n_clusters, seed=42):
+    """K-means on train+cal embeddings -- once per cell/seed (alpha-independent).
+    Returns each cal and test point's cluster id."""
     km = KMeans(n_clusters=n_clusters, random_state=seed, n_init=10)
     km.fit(np.concatenate([train_emb, cal_emb], axis=0))
-    cal_clusters = km.labels_[len(train_emb):]
+    return km.labels_[len(train_emb):], km.predict(test_emb)
+
+
+def cluster_predset(cal_clusters, test_clusters, cal_prob, cal_y, test_prob,
+                    alpha, n_clusters):
+    """Per-cluster LABEL threshold (`_query_quantile` on that cluster's cached scores);
+    each test point's set uses its own cluster's threshold. Cheap -- no clustering here."""
+    cal_scores = 1.0 - cal_prob[np.arange(len(cal_y)), cal_y]        # LABEL non-conformity
     thresh = np.array([
         _query_quantile(cal_scores[cal_clusters == c], alpha)
         if np.any(cal_clusters == c) else np.inf
         for c in range(n_clusters)
     ])
-    test_clusters = km.predict(test_emb)
     test_scores = 1.0 - test_prob                                   # (N, K)
     return test_scores <= thresh[test_clusters][:, None]           # (N, K) bool
 
@@ -83,8 +87,9 @@ def validate(n_clusters):
     cp, tp = probs(2000), probs(4000)
     cy, ty = rng.integers(0, K, 2000), rng.integers(0, K, 4000)
     print(f"ClusterLabel synthetic check (n_clusters={n_clusters}):")
+    cal_cl, test_cl = fit_clusters(tr, ca, te, n_clusters)
     for a in [0.2, 0.1, 0.05]:
-        ps = cluster_label_predset(tr, ca, te, cp, cy, tp, a, n_clusters)
+        ps = cluster_predset(cal_cl, test_cl, cp, cy, tp, a, n_clusters)
         m = _metrics(ps, ty, a)
         print(f"  alpha={a}: coverage={m['coverage_mean']} (target {1-a:.2f})  "
               f"size={m['avg_set_size']}  rejection={m['rejection_rate']}")
@@ -103,23 +108,26 @@ def rescore(pred_cache, n_clusters, out):
 
     rows, missing = [], []
     for (ds, model), seedmap in sorted(cells.items()):
+        per_seed = {}    # seed -> (cal_clusters, test_clusters, preds); cluster once per seed
+        for seed, prefix in sorted(seedmap.items()):
+            pred_path = prefix + ".npz"
+            if not os.path.exists(pred_path):
+                missing.append((ds, model, seed)); continue
+            emb = np.load(prefix + "-emb.npz"); pred = np.load(pred_path)
+            cal_cl, test_cl = fit_clusters(emb["train_emb"], emb["cal_emb"],
+                                           emb["test_emb"], n_clusters)
+            per_seed[seed] = (cal_cl, test_cl, pred)
+        if not per_seed:
+            continue
         for alpha in grid.ALPHAS:
             agg = collections.defaultdict(list)
-            for seed, prefix in sorted(seedmap.items()):
-                emb = np.load(prefix + "-emb.npz")
-                pred_path = prefix + ".npz"
-                if not os.path.exists(pred_path):
-                    missing.append((ds, model, seed)); continue
-                pred = np.load(pred_path)
-                ps = cluster_label_predset(
-                    emb["train_emb"], emb["cal_emb"], emb["test_emb"],
-                    pred["cal_prob"], pred["cal_y"], pred["test_prob"], alpha, n_clusters)
+            for cal_cl, test_cl, pred in per_seed.values():
+                ps = cluster_predset(cal_cl, test_cl, pred["cal_prob"], pred["cal_y"],
+                                     pred["test_prob"], alpha, n_clusters)
                 m = _metrics(ps, pred["test_y"], alpha)
                 for k, v in m.items():
                     if isinstance(v, (int, float)):
                         agg[k].append(v)
-            if not agg:
-                continue
             rows.append({
                 "cell_id": f"{ds}-los-{model}-ClusterLabel-cluster",
                 "dataset": ds, "task": "los", "model": model,
