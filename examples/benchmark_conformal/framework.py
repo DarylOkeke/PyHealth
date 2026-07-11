@@ -19,6 +19,7 @@ import numpy as np
 import torch
 
 import grid
+import shift
 from pyhealth.calib.predictionset.base_conformal import _query_quantile
 from pyhealth.calib.utils import prepare_numpy_dataset
 from pyhealth.datasets import (
@@ -148,6 +149,19 @@ def load_base_dataset(dataset, root, dev):
     raise ValueError(f"unknown dataset {dataset}")
 
 
+def make_splits(samples, seed, split_strategy, hosp_of_stay, holdout_hospitals):
+    """train/val/cal/test splits for one seed.
+
+    by_patient -> split_by_patient_conformal (pooled). by_hospital -> leave-hospitals-out
+    (test = held-out hospitals; source split by patient), see shift.split_by_hospital.
+    """
+    if split_strategy == "by_hospital":
+        return shift.split_by_hospital(
+            samples, hosp_of_stay, holdout_hospitals, seed, grid.RATIOS
+        )
+    return split_by_patient_conformal(samples, ratios=grid.RATIOS, seed=seed)
+
+
 # --- validation (coverage gate) ------------------------------------------
 
 def coverage_tolerance(n_cal):
@@ -187,6 +201,35 @@ def evaluate(cal_scores, cal_y, test_scores, test_y, mode, alpha, n_classes):
     predset = test_scores <= t
     coverage = 1 - miscoverage_overall_ps(predset, test_y)
     return coverage, size(predset), miscoverage_ps(predset, test_y)
+
+
+def covariate_outcomes(model, cal_data, test_data, test_np, alphas):
+    """CovariateLabel (KDE likelihood-ratio weighted, marginal) per alpha, off the trained
+    model. Needs cal/test embeddings (extract_embeddings); set rule is p(class) > threshold,
+    matching CovariateLabel.forward. Returns {alpha: outcome} mirroring evaluate()."""
+    from pyhealth.calib.predictionset.covariate import CovariateLabel
+    from pyhealth.calib.utils import extract_embeddings
+    dev = str(model.device)
+    cal_emb = extract_embeddings(model, cal_data, device=dev)
+    test_emb = extract_embeddings(model, test_data, device=dev)
+    out = {}
+    for alpha in alphas:
+        try:
+            cov = CovariateLabel(model, alpha=float(alpha))
+            cov.calibrate(cal_dataset=cal_data, cal_embeddings=cal_emb,
+                          test_embeddings=test_emb)
+            t = float(cov.t.detach().cpu().numpy())
+            predset = test_np["y_prob"] > t
+            per_class = miscoverage_ps(predset, test_np["y_true"])
+            out[alpha] = {
+                "status": "ran",
+                "coverage": float(1 - miscoverage_overall_ps(predset, test_np["y_true"])),
+                "set_size": float(size(predset)),
+                "per_class_miscov": [float(x) for x in per_class],
+            }
+        except Exception as exc:
+            out[alpha] = {"status": "errored", "reason": repr(exc)}
+    return out
 
 
 def _class_counts(split, label_key, n_classes):
@@ -260,10 +303,13 @@ def _base_metrics(test):
 
 
 def run_seed(samples, dataset, task, model_name, method_modes, alphas, seed, epochs,
-             pred_cache=None, cache_embeddings=False):
+             pred_cache=None, cache_embeddings=False, split_strategy="by_patient",
+             hosp_of_stay=None, holdout_hospitals=None):
     """Train the base model once and calibrate every (method, mode, alpha) for one seed.
 
     method_modes is a list of (method, mode) pairs; all share the single trained model.
+    LABEL/APS/RAPS calibrate off the cached numpy scores; CovariateLabel runs inline on
+    the model (needs embeddings). split_strategy picks the split (see make_splits).
     Returns (cal_counts, {(method, mode): {alpha: outcome}}, base_metrics); outcome status
     is ran / skipped / errored, with coverage / set_size / per_class_miscov / reason.
     """
@@ -271,8 +317,8 @@ def run_seed(samples, dataset, task, model_name, method_modes, alphas, seed, epo
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    train_data, val_data, cal_data, test_data = split_by_patient_conformal(
-        samples, ratios=grid.RATIOS, seed=seed
+    train_data, val_data, cal_data, test_data = make_splits(
+        samples, seed, split_strategy, hosp_of_stay, holdout_hospitals
     )
     label_key = grid.LABEL_KEY[task]
     n_classes = samples.output_processors[label_key].size()
@@ -315,13 +361,14 @@ def run_seed(samples, dataset, task, model_name, method_modes, alphas, seed, epo
             _save_embeddings(pred_cache, dataset, task, model_name, seed, model,
                              train_data, cal_data, test_data)
     base = _base_metrics(test)
-    present = {m for m, _ in method_modes}
+    scorer_modes = [(m, mo) for (m, mo) in method_modes if m in SCORERS]
+    present = {m for m, _ in scorer_modes}
     cal_scores = {m: SCORERS[m](cal["y_prob"]) for m in present}
     test_scores = {m: SCORERS[m](test["y_prob"]) for m in present}
 
     min_count = min(cal_counts)
     outcomes = {km: {} for km in method_modes}
-    for method, mode in method_modes:
+    for method, mode in scorer_modes:
         for alpha in alphas:
             if mode == "class-conditional":
                 required = math.ceil(1.0 / alpha)
@@ -347,13 +394,21 @@ def run_seed(samples, dataset, task, model_name, method_modes, alphas, seed, epo
             except Exception as exc:
                 outcomes[(method, mode)][alpha] = {"status": "errored",
                                                    "reason": repr(exc)}
+    if ("CovariateLabel", "marginal") in outcomes:
+        outcomes[("CovariateLabel", "marginal")] = covariate_outcomes(
+            model, cal_data, test_data, test, alphas
+        )
     return cal_counts, outcomes, base
 
 
 # --- cell driver ---------------------------------------------------------
 
-def _cell_id(dataset, task, model_name, method, mode):
-    return f"{dataset}-{task}-{model_name}-{method}-{mode}"
+_STRATEGY_TAG = {"by_hospital": "byhosp"}
+
+
+def _cell_id(dataset, task, model_name, method, mode, split_strategy="by_patient"):
+    cid = f"{dataset}-{task}-{model_name}-{method}-{mode}"
+    return cid if split_strategy == "by_patient" else f"{cid}-{_STRATEGY_TAG[split_strategy]}"
 
 
 def _aggregate(per_seed, key, alpha):
@@ -380,11 +435,13 @@ def _agg_base(bases, key):
 
 
 def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, epochs,
-             demo=False, pred_cache=None, cache_embeddings=False):
+             demo=False, pred_cache=None, cache_embeddings=False,
+             split_strategy="by_patient", hosp_of_stay=None, holdout_hospitals=None):
     """Run all seeds for one (dataset, task, model); one row per (method, mode, alpha).
 
     Trains once per seed; the methods all calibrate off that model. LABEL uses `modes`;
-    APS/RAPS are marginal only. Caches predictions per seed when pred_cache is set.
+    APS/RAPS/CovariateLabel are marginal only. Caches predictions per seed when pred_cache
+    is set. split_strategy tags cell_id + the split_strategy column (by_patient default).
     """
     method_modes = [(method, mode)
                     for method in methods
@@ -396,6 +453,8 @@ def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, 
         cal_counts, outcomes, base = run_seed(
             samples, dataset, task, model_name, method_modes, alphas, seed, epochs,
             pred_cache=pred_cache, cache_embeddings=cache_embeddings,
+            split_strategy=split_strategy, hosp_of_stay=hosp_of_stay,
+            holdout_hospitals=holdout_hospitals,
         )
         per_seed.append(outcomes)
         per_base.append(base)
@@ -408,10 +467,12 @@ def run_cell(dataset, task, model_name, samples, methods, modes, alphas, seeds, 
         for alpha in alphas:
             agg = _aggregate(per_seed, (method, mode), alpha)
             row = {
-                "cell_id": _cell_id(dataset, task, model_name, method, mode),
+                "cell_id": _cell_id(dataset, task, model_name, method, mode,
+                                    split_strategy),
                 "dataset": dataset, "task": task,
                 "output_type": grid.OUTPUT_TYPE[task], "model": model_name,
-                "split": grid.SPLIT, "cal_separate_from_val": "yes",
+                "split": grid.SPLIT, "split_strategy": split_strategy,
+                "cal_separate_from_val": "yes",
                 "method": method, "mode": mode, "alpha": alpha,
                 "target_coverage": round(1 - alpha, 2),
                 "coverage_mean": "", "coverage_std": "", "avg_set_size": "",

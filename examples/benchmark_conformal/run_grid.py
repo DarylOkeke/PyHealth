@@ -24,11 +24,12 @@ from pathlib import Path
 
 import framework
 import grid
+import shift
 
 RESULTS_CSV = Path(__file__).parent / "results.csv"
 
 RESULTS_COLUMNS = [
-    "cell_id", "dataset", "task", "output_type", "model", "split",
+    "cell_id", "dataset", "task", "output_type", "model", "split", "split_strategy",
     "cal_separate_from_val", "method", "mode", "alpha", "target_coverage",
     "coverage_mean", "coverage_std", "avg_set_size", "rejection_rate",
     "per_class_miscov", "worst_class_miscov", "worst_class", "base_auroc", "base_f1",
@@ -51,7 +52,8 @@ def planned_rows():
                             yield {
                                 "cell_id": cell, "dataset": dataset, "task": task,
                                 "output_type": grid.OUTPUT_TYPE[task], "model": model,
-                                "split": grid.SPLIT, "cal_separate_from_val": "yes",
+                                "split": grid.SPLIT, "split_strategy": "by_patient",
+                                "cal_separate_from_val": "yes",
                                 "method": method, "mode": mode, "alpha": alpha,
                                 "target_coverage": round(1 - alpha, 2),
                                 "coverage_mean": "", "coverage_std": "",
@@ -146,6 +148,13 @@ def main():
                         "needs --pred-cache")
     p.add_argument("--skip-done", action="store_true",
                    help="resume: skip (task,model) cells already fully computed in results.csv")
+    p.add_argument("--split-strategy", default="by_patient",
+                   choices=["by_patient", "by_hospital"],
+                   help="by_hospital = leave-hospitals-out covariate shift (eICU); "
+                        "adds CovariateLabel and needs --holdout-hospitals")
+    p.add_argument("--holdout-hospitals", default=None,
+                   help="comma-separated hospitalids held out as the shifted test set "
+                        "(by_hospital only; selection/count locked by the team, not here)")
     p.add_argument("--dev", action="store_true", help="subsample the dataset")
     p.add_argument("--demo", action="store_true",
                    help="smoke run: validation informational, results.csv not written")
@@ -164,6 +173,17 @@ def main():
     models = args.models.split(",")
     methods = grid.METHODS if args.method is None else [args.method]
     label_modes = args.modes.split(",")
+
+    shift_mode = args.split_strategy == "by_hospital"
+    holdout = None
+    if shift_mode:
+        if args.dataset != "eicu":
+            p.error("--split-strategy by_hospital is eICU-only")
+        if not args.holdout_hospitals:
+            p.error("--holdout-hospitals is required for --split-strategy by_hospital")
+        holdout = [h.strip() for h in args.holdout_hospitals.split(",") if h.strip()]
+        if args.method is None:
+            methods = grid.METHODS + ["CovariateLabel"]
     seeds = [int(s) for s in args.seeds.split(",")]
     prov = {
         "run_id": args.run_id,
@@ -176,6 +196,10 @@ def main():
 
     done = _done_cells(args.dataset) if args.skip_done else set()
     base = framework.load_base_dataset(args.dataset, args.root, args.dev)
+    hosp_of_stay = shift.hospital_of_stay(base) if shift_mode else None
+    if shift_mode:
+        print(f"by_hospital: {len(set(hosp_of_stay.values()))} hospitals mapped; "
+              f"holdout(test)={holdout}", flush=True)
     total = {}
     for task in tasks:
         if done and all((task, m) in done for m in models):
@@ -193,6 +217,8 @@ def main():
                 args.dataset, task, model, samples, methods, label_modes, grid.ALPHAS,
                 seeds=seeds, epochs=args.epochs, demo=args.demo,
                 pred_cache=args.pred_cache, cache_embeddings=args.cache_embeddings,
+                split_strategy=args.split_strategy, hosp_of_stay=hosp_of_stay,
+                holdout_hospitals=holdout,
             )
             if args.demo:
                 for r in rows:
