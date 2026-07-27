@@ -16,7 +16,6 @@ loaded dataset and are verified on the cluster; _hospital_partition is pure and 
 from __future__ import annotations
 
 import numpy as np
-from torch.utils.data import Subset
 
 
 def _hospital_partition(hosp_ids, patient_ids, holdout_hospitals, seed, ratios):
@@ -59,9 +58,10 @@ def hospital_of_stay(base_dataset):
 
 def split_by_hospital(samples, hosp_of_stay, holdout_hospitals, seed, ratios):
     """Leave-hospitals-out split of a SampleDataset. `hosp_of_stay` maps each sample's
-    visit_id (patientunitstayid) to its hospitalid (see hospital_of_stay)."""
+    visit_id (patientunitstayid) to its hospitalid (see hospital_of_stay). Returns four
+    SampleDataset subsets (via dataset.subset, like split_by_patient_conformal)."""
     hosp = [hosp_of_stay.get(str(samples[i]["visit_id"])) for i in range(len(samples))]
     pat = [str(samples[i]["patient_id"]) for i in range(len(samples))]
     tr, va, ca, te = _hospital_partition(hosp, pat, holdout_hospitals, seed, ratios)
-    return (Subset(samples, tr), Subset(samples, va),
-            Subset(samples, ca), Subset(samples, te))
+    return (samples.subset(tr), samples.subset(va),
+            samples.subset(ca), samples.subset(te))
