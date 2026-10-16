@@ -20,6 +20,7 @@ Translate source-specific files into PyHealth's common patient and event model w
 6. **Verify the whole path with synthetic data.** Exercise raw files, normalized events, `Patient`, the intended task, `SampleDataset`, and splitting or collation when affected. Run the targeted tests, repository contribution checks, and repository formatter check.
 
 Read [references/dataset-contract.md](references/dataset-contract.md) before designing or reviewing a dataset change.
+For benchmark dataset selection, see [references/dataset-categories.md](references/dataset-categories.md).
 
 ## Required checks
 
